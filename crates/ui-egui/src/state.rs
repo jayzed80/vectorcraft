@@ -555,6 +555,10 @@ pub struct UiState {
     /// them (#1732).
     #[serde(default)]
     pub transform_each: Value,
+    /// The Rearrange All Artboards fields it was last confirmed with (layout, order, columns,
+    /// spacing, moveArtwork; null: never used): it opens on them.
+    #[serde(default)]
+    pub rearrange_artboards: Value,
     /// The DXF Import Options chosen last (fit, scaleLineweights, center, mergeLayers; null:
     /// never used).
     #[serde(default)]
@@ -878,6 +882,7 @@ impl Default for UiState {
             simplify: Value::Null,
             move_options: Value::Null,
             transform_each: Value::Null,
+            rearrange_artboards: Value::Null,
             dxf_import: Value::Null,
             home: None,
             trace_hold_source: None,

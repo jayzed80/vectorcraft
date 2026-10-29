@@ -30,6 +30,21 @@ pub fn fields() -> Value {
     json!({"layout": "gridByRow", "order": "leftToRight", "columns": 2, "spacing": 20, "moveArtwork": true})
 }
 
+/// The fields the dialog opens with: [`fields`], with the values it was last confirmed with
+/// (#4558). A kept value of the wrong kind (a hand-edited file) is left out.
+pub fn open_fields(app: &VectorcraftApp) -> Value {
+    let mut out = fields();
+    for k in ["layout", "order", "columns", "spacing", "moveArtwork"] {
+        match (app.ui.rearrange_artboards.get(k), out.get(k)) {
+            (Some(v @ Value::String(_)), Some(Value::String(_))) => out[k] = v.clone(),
+            (Some(v @ Value::Number(_)), Some(Value::Number(_))) => out[k] = v.clone(),
+            (Some(v @ Value::Bool(_)), Some(Value::Bool(_))) => out[k] = v.clone(),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// A layout's toggle: its tooltip and its artboards' cells (column, row) in their order, left to
 /// right.
 fn layout_glyph(l: ArtboardLayout) -> (&'static str, &'static [(u8, u8)]) {
@@ -110,7 +125,10 @@ fn body(app: &mut VectorcraftApp, ui: &mut egui::Ui, d: &mut Dialog) -> bool {
 }
 
 fn confirm(app: &mut VectorcraftApp, d: &Dialog) -> Result<Value, String> {
-    run_and_close(app, CMD, params(d))
+    let p = params(d);
+    let r = run_and_close(app, CMD, p.clone())?;
+    app.ui.rearrange_artboards = p;
+    Ok(r)
 }
 
 #[cfg(test)]
@@ -167,6 +185,37 @@ mod tests {
         assert!(app.ui.dialog.is_none());
         assert_eq!(origins(&app), [(220.0, 0.0), (110.0, 0.0), (0.0, 0.0)]);
         assert_eq!(app.session.doc().unwrap().history.undo.len(), undo + 1);
+    }
+
+    /// #4558: the dialog opens on the values it was last confirmed with, not the defaults again;
+    /// Cancel keeps nothing new, and a stored value of the wrong kind is ignored.
+    #[test]
+    fn reopens_on_the_values_it_was_last_confirmed_with() {
+        let mut app = VectorcraftApp::new(Session::new(), Default::default());
+        app.run("file.new", json!({"width": 100, "height": 50, "artboards": 3})).unwrap();
+        let open = |app: &mut VectorcraftApp| {
+            app.run("ui.menuDialog", json!({ "command": CMD })).unwrap();
+            app.ui.dialog.as_ref().unwrap().fields.clone()
+        };
+        assert_eq!(Value::Object(open(&mut app)), fields());
+        let d = app.ui.dialog.as_mut().unwrap();
+        d.fields.insert("layout".into(), json!("row"));
+        d.fields.insert("spacing".into(), json!(35));
+        d.fields.insert("moveArtwork".into(), json!(false));
+        crate::dialogs::confirm(&mut app).unwrap();
+        let f = open(&mut app);
+        assert_eq!((f["layout"].clone(), f["spacing"].as_f64(), f["moveArtwork"].clone()), (json!("row"), Some(35.0), json!(false)));
+        // Cancel keeps nothing new.
+        app.ui.dialog.as_mut().unwrap().fields.insert("spacing".into(), json!(99));
+        crate::dialogs::cancel(&mut app);
+        assert_eq!(open(&mut app)["spacing"].as_f64(), Some(35.0));
+        // Kept with the UI state; a hand-edited value of the wrong kind falls back to the default.
+        app.ui.dialog = None;
+        app.ui = serde_json::from_value(serde_json::to_value(&app.ui).unwrap()).unwrap();
+        assert_eq!(open(&mut app)["spacing"].as_f64(), Some(35.0));
+        app.ui.dialog = None;
+        app.ui.rearrange_artboards = json!({"spacing": "wide", "layout": 3});
+        assert_eq!(Value::Object(open(&mut app)), fields());
     }
 
     /// Clicking the layout and order toggles sets the fields (the toggles' rects from the frame).

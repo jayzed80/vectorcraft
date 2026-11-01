@@ -1,6 +1,6 @@
 //! Absurd but finite or non-finite numeric parameters: no panic, hang or runaway allocation.
 
-use vectorcraft_geom::{PathData, Point, SubPath};
+use vectorcraft_geom::{FillRule, PathData, Point, SubPath};
 use vectorcraft_pathops::*;
 
 const HOSTILE: [f64; 9] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0, 1e-300, 1e300, -1e300, f64::MAX];
@@ -45,5 +45,21 @@ fn stroke_and_offset_survive_hostile_numbers() {
                 }
             }
         }
+    }
+}
+
+/// Shapes far from the origin pushed the outline de-duplication grid cell index to `i64::MAX`,
+/// and the neighbour lookup `cx + 1` overflowed.
+#[test]
+fn pathfinder_outline_survives_far_away_shapes() {
+    for &x in &[1e30, 1e300, f64::MAX / 4.0] {
+        let sq = |dx: f64| {
+            let p = PathData::single(SubPath::polyline(
+                &[Point::new(x + dx, x), Point::new(x + dx + 10.0, x), Point::new(x + dx + 10.0, x + 10.0), Point::new(x + dx, x + 10.0)],
+                true,
+            ));
+            Shape::new(p, FillRule::NonZero, 1)
+        };
+        let _ = pathfinder(PathfinderOp::Outline, &[sq(0.0), sq(5.0)]);
     }
 }

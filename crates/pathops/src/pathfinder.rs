@@ -874,8 +874,8 @@ fn outline_edges(arr: &Arrangement, shapes: &[Shape]) -> Vec<Shape> {
     for (chain, key) in chains {
         let (a, b, m) = sig(&chain);
         let (cx, cy) = cell(m);
-        let found = (cx - 1..=cx + 1)
-            .flat_map(|x| (cy - 1..=cy + 1).map(move |y| (x, y)))
+        let found = (cx.saturating_sub(1)..=cx.saturating_add(1))
+            .flat_map(|x| (cy.saturating_sub(1)..=cy.saturating_add(1)).map(move |y| (x, y)))
             .filter_map(|k| grid.get(&k))
             .flatten()
             .copied()

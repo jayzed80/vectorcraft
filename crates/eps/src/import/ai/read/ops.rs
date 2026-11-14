@@ -992,8 +992,8 @@ struct StylePaints<'a> {
     brushes: &'a [super::super::brush::BrushDraft],
     /// Which of [`Self::brushes`] are kept as brushes ([`super::super::brush::kept`]).
     kept: &'a [bool],
-    /// The art an Art brush draws as the file does, with its length ([`super::super::brush::bending_art`]).
-    bending: &'a HashMap<String, f64>,
+    /// The art an Art brush draws as the file does ([`super::super::brush::bending_art`]).
+    bending: &'a HashSet<String>,
     space: Affine,
 }
 
@@ -1270,7 +1270,7 @@ fn styled(object: &Node, look: &Node, st: &crate::import::ai::style::ArtStyle, p
                     if !super::super::brush::draws_as(draft, settings, paints.bending) {
                         return None;
                     }
-                    let art = matches!(settings, super::super::brush::PathBrush::Art(_));
+                    let art = matches!(settings, super::super::brush::PathBrush::Art);
                     let on_a_path = matches!(object.kind, NodeKind::Path { .. } | NodeKind::Compound { .. });
                     if !on_a_path && (art || !slot) {
                         return None;

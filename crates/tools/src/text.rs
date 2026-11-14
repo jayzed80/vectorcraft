@@ -781,11 +781,9 @@ impl TypeTool {
 
     /// Start editing the type under `p` with the caret there → the actions (ending the previous
     /// edit, selecting the type); None when no type is under `p`. A click among the characters
-    /// edits them, whatever Type Object Selection by Path Only says, and so does a click anywhere
-    /// inside area type's frame.
+    /// edits them, whatever Type Object Selection by Path Only says.
     fn edit_at(&mut self, cx: &ToolContext, p: Point) -> Option<Vec<Action>> {
-        let opt = vectorcraft_doc::hit::HitOptions { type_path_only: false, area_type_interior: true, ..cx.hit_options() };
-        let h = hit_test(cx.doc, p, opt)?;
+        let h = hit_test(cx.doc, p, vectorcraft_doc::hit::HitOptions { type_path_only: false, ..cx.hit_options() })?;
         let Some(NodeKind::Text(t)) = cx.doc.node(h.leaf).map(|n| &n.kind) else { return None };
         let lay = self.layout(t);
         let byte = vectorcraft_text::hit_byte(&lay, t.xf.inverse() * p);

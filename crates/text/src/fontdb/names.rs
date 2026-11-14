@@ -53,7 +53,6 @@ pub(super) fn script_families(c: char) -> &'static [&'static str] {
             "Lohit Devanagari",
             "Mangal",
         ],
-        Script::Gujarati => &["Gujarati Sangam MN", "GujaratiMT", "Nirmala UI", "Shruti", "Noto Sans Gujarati", "Noto Sans Gujarati UI"],
         _ => &[],
     }
 }

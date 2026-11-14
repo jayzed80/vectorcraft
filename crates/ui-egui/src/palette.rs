@@ -7,40 +7,20 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::{VectorcraftApp, menus};
 
-/// Engine commands the palette leaves out, each with the UI command of the same name that runs it
-/// the way the panels and menus do: (engine id, UI command id). The Layers panel's Delete
-/// Selection asks before deleting a layer that holds art, and the other UI commands open the
-/// command's dialog or file chooser. Scripts and the control channel still run the engine ids.
-const WRAPPED: &[(&str, &str)] = &[
-    ("layer.delete", "ui.layerDelete"),
-    ("brush.new", "ui.newBrush"),
-    ("brush.options", "ui.brushOptions"),
-    ("symbol.options", "ui.symbolOptions"),
-    ("svgFilter.import", "ui.importSvgFilter"),
-    ("text.convertListToText", "type.convertListToText"),
-];
-
 /// Everything the palette searches: (label, command id or `tool:<id>`, shortcut).
 pub fn items() -> Vec<(String, String, String)> {
     let mut items = vec![];
-    // Aliases kept for older scripts run a command that is listed already, and a wrapped engine
-    // command is listed as its UI command.
+    // Aliases kept for older scripts run a command that is listed already.
     let plugin_commands = vectorcraft_engine::cmd::plugin::command_specs();
-    let listed = |id: &str| !vectorcraft_engine::cmd::is_alias(id) && !WRAPPED.iter().any(|(engine, _)| *engine == id);
-    let labeled = |menu: &[&str], label: &str| {
-        let path = menu.join(" › ");
-        if path.is_empty() { label.to_string() } else { format!("{path} › {label}") }
-    };
-    for c in vectorcraft_engine::command_specs().iter().filter(|c| listed(c.id)).chain(plugin_commands) {
-        items.push((labeled(c.menu, c.label), c.id.to_string(), menus::shortcut_of(c.id).unwrap_or("").to_string()));
+    for c in vectorcraft_engine::command_specs().iter().filter(|c| !vectorcraft_engine::cmd::is_alias(c.id)).chain(plugin_commands) {
+        let path = c.menu.join(" › ");
+        let label = if path.is_empty() { c.label.to_string() } else { format!("{path} › {}", c.label) };
+        items.push((label, c.id.to_string(), menus::shortcut_of(c.id).unwrap_or("").to_string()));
     }
     // `plugin.dialog` runs nothing without an id: [`build`] lists each filter instead. A script of
-    // the Scripts folder runs from File › Scripts, by its path. A UI command that wraps an engine
-    // command takes that command's menu path, so a search for the path still finds it.
+    // the Scripts folder runs from File › Scripts, by its path.
     for c in menus::UI_COMMANDS.iter().filter(|c| c.0 != "plugin.dialog" && c.0 != crate::scripts_menu::COMMAND) {
-        let engine = WRAPPED.iter().find(|(_, ui)| *ui == c.0).and_then(|(engine, _)| vectorcraft_engine::find_command(engine));
-        let label = engine.map_or_else(|| c.1.to_string(), |e| labeled(e.menu, c.1));
-        items.push((label, c.0.to_string(), menus::shortcut_of(c.0).unwrap_or("").to_string()));
+        items.push((c.1.to_string(), c.0.to_string(), menus::shortcut_of(c.0).unwrap_or("").to_string()));
     }
     for tool in vectorcraft_tools::catalog::all_tools() {
         items.push((tool.label.to_string(), format!("tool:{}", tool.id), crate::shortcut_editor::tool_shortcut(tool.id).unwrap_or("").to_string()));
@@ -60,9 +40,8 @@ pub(crate) struct Entry {
     shortcut: String,
     /// The label in the UI language.
     shown: String,
-    /// The English label (what agents document), the shown label and the id (and the id of the
-    /// engine command a UI command wraps), lowercased, one per line: a query word (which has no
-    /// line break) matches within one of them.
+    /// The English label (what agents document), the shown label and the id, lowercased, one per
+    /// line: a query word (which has no line break) matches within one of them.
     haystack: String,
 }
 
@@ -92,12 +71,7 @@ fn entries(ctx: &egui::Context, lang: crate::i18n::Lang) -> Arc<Vec<Entry>> {
 /// item (`plugin:<id>`), whose name is not translated.
 fn build(lang: crate::i18n::Lang) -> Vec<Entry> {
     let entry = |label: String, shown: String, id: String, shortcut: String| {
-        let mut haystack = format!("{}\n{}\n{}", label.to_lowercase(), shown.to_lowercase(), id.to_lowercase());
-        // A UI command that wraps an engine command is also found by the engine command's id.
-        if let Some((engine, _)) = WRAPPED.iter().find(|(_, ui)| *ui == id) {
-            haystack.push('\n');
-            haystack.push_str(&engine.to_lowercase());
-        }
+        let haystack = format!("{}\n{}\n{}", label.to_lowercase(), shown.to_lowercase(), id.to_lowercase());
         Entry { id, shortcut, shown, haystack }
     };
     let mut out: Vec<Entry> = items()

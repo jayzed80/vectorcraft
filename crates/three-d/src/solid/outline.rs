@@ -94,13 +94,29 @@ fn piece(step: &Along, span: &Span, t0: f64, t1: f64, fade: (f64, f64), p: Point
             return (budget.0 <= MAX_OUTLINE_CURVES).then(|| vec![c]);
         }
     }
-    let (dp, dq) = (p - (step.at)(span, t0), q - (step.at)(span, t1));
+    if step.map.is_none() && p.distance(q) <= 1e-6 {
+        return None;
+    }
+    let (at0, at1) = ((step.at)(span, t0), (step.at)(span, t1));
+    let (dp, dq) = (p - at0, q - at1);
+    let base_len = at0.distance(at1);
+    let cur_len = p.distance(q);
+    let scale = if step.map.is_none() && cur_len < base_len * (1.0 - 1e-6) { (cur_len / base_len.max(1e-9)).clamp(0.0, 1.0) } else { 1.0 };
     // 1 at the end, 0 from `to` on, with no slope at either.
     let ease = |t: f64, from: f64, to: f64| {
         let x = if to == from { 1.0 } else { ((t - from) / (to - from)).clamp(0.0, 1.0) };
         1.0 - x * x * (3.0 - 2.0 * x)
     };
-    let g = |t: f64| (step.at)(span, t) + dp * ease(t, t0, fade.0) + dq * ease(t, t1, fade.1);
+    let g = |t: f64| {
+        let base = if scale < 1.0 {
+            let s = if t1 == t0 { 0.0 } else { (t - t0) / (t1 - t0) };
+            let chord = at0.lerp(at1, s);
+            chord + ((step.at)(span, t) - chord) * scale
+        } else {
+            (step.at)(span, t)
+        };
+        base + dp * ease(t, t0, fade.0) + dq * ease(t, t1, fade.1)
+    };
     let mut out = vec![];
     if !fit(&g, p, q, t0, t1, step.tolerance, 0, &mut out) {
         return None;
@@ -141,6 +157,10 @@ fn contour(path: &mut BezPath, ring: &Ring, points: &[Point], step: &Along, budg
             (j, t1, last) = (j + 1, next.t1, next.t0);
         }
         let (p, q) = (points.get(i).copied().unwrap_or(first), end(j));
+        if step.map.is_none() && p.distance(q) <= 1e-6 {
+            i = j + 1;
+            continue;
+        }
         match piece(step, &span, span.t0, t1, (span.t1, last), p, q, budget) {
             Some(curves) => {
                 curved = true;

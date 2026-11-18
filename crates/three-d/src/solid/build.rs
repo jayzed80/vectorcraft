@@ -2,7 +2,7 @@ use vectorcraft_geom::kurbo::ParamCurveDeriv;
 
 use super::outline::{self, Along, Budget, CURVE_TOLERANCE};
 use super::rings::{
-    CURVE_PIECES, MAX_PIECES, MAX_PLANE_POINTS, MAX_SOLID_POINTS, Ring, Span, TOO_COMPLEX_SURFACE, curve_pieces, inset, left, signed_area,
+    CURVE_PIECES, MAX_PIECES, MAX_PLANE_POINTS, MAX_SOLID_POINTS, Ring, Span, TOO_COMPLEX_SURFACE, curve_pieces, inset_steps, left, signed_area,
     solid_rings_traced, square_corners,
 };
 use super::{
@@ -385,7 +385,7 @@ impl Placing {
 }
 
 /// The point `w` points to the left of `span`'s curve at `t`, as the ring runs along it (toward
-/// the filled side): where [`inset`] moves the ring's points, without its miters.
+/// the filled side): where [`inset_steps`] moves the ring's points, without its miters.
 fn offset(span: &Span, t: f64, w: f64) -> Point {
     let p = span.curve.eval(t);
     if w == 0.0 {
@@ -615,7 +615,13 @@ pub(crate) fn extrude_faces(path: &PathData, rule: FillRule, bounds: Rect, optio
     // Every inset of one extrusion goes the same way: into the shape for a bevel inside, out of it
     // for one outside. The corners that way opens are cut square past the miter limit.
     let side = steps.iter().map(|s| s.inset).find(|w| *w != 0.0).unwrap_or(0.0);
-    let traced: Vec<Ring> = solid_rings_traced(path, rule, size, MAX_SOLID_POINTS, most)?.iter().map(|r| square_corners(r, side)).collect();
+    let mut traced: Vec<Ring> = solid_rings_traced(path, rule, size, MAX_SOLID_POINTS, most)?.iter().map(|r| square_corners(r, side)).collect();
+    let initial_edges = traced.iter().map(|r| r.points.len()).fold(0usize, usize::saturating_add);
+    if initial_edges.saturating_mul(bands).saturating_add(caps) > MAX_SOLID_FACES {
+        return Err(TOO_COMPLEX_SURFACE.into());
+    }
+    let step_insets: Vec<f64> = steps.iter().map(|s| s.inset).collect();
+    let inset_rings = inset_steps(&mut traced, &step_insets);
     let rings: Vec<&[Point]> = traced.iter().map(|r| r.points.as_slice()).collect();
     let edges = rings.iter().map(|r| r.len()).fold(0usize, usize::saturating_add);
     if edges.saturating_mul(bands).saturating_add(caps) > MAX_SOLID_FACES {
@@ -624,19 +630,22 @@ pub(crate) fn extrude_faces(path: &PathData, rule: FillRule, bounds: Rect, optio
     let camera = Camera::new(view, bounds, o.depth);
     let mut b = Builder::new(&camera, o.cap, o.hidden, keep);
     let z = |t: f64| o.depth / 2.0 - o.depth * t;
-    let ring_at =
-        |ring: &[Point], s: &Step| -> Vec<V3> { section(&inset(ring, s.inset), bounds, &o, s.t).iter().map(|p| camera.place(*p, z(s.t))).collect() };
+    let ring_at = |ring_idx: usize, step_idx: usize| -> Vec<V3> {
+        let (Some(s), Some(ring)) = (steps.get(step_idx), inset_rings.get(ring_idx).and_then(|r| r.get(step_idx))) else {
+            return vec![];
+        };
+        section(ring, bounds, &o, s.t).iter().map(|p| camera.place(*p, z(s.t))).collect()
+    };
     // Every band of a twisted outline, bevels included, is cut as its walls' first slice is (with
     // bevels and no walls, as its shallowest band is), within [`MAX_FACES`] facets.
-    let depth_of = |s: &[Step]| s.get(1).zip(s.first()).map_or(0.0, |(b, a)| (b.t - a.t).abs());
-    let wall = steps
-        .windows(2)
-        .find(|s| s[0].face == 0.0 && s[1].face == 0.0)
-        .or_else(|| steps.windows(2).filter(|s| depth_of(s) > 1e-12).min_by(|a, c| depth_of(a).total_cmp(&depth_of(c))));
-    let mut pieces: Vec<Vec<usize>> = rings
-        .iter()
-        .map(|ring| match wall {
-            Some([s0, s1]) if o.twist != 0.0 => cuts(&ring_at(ring, s0), &ring_at(ring, s1)),
+    let wall_idx = (0..steps.len().saturating_sub(1)).find(|&k| steps[k].face == 0.0 && steps[k + 1].face == 0.0).or_else(|| {
+        (0..steps.len().saturating_sub(1))
+            .filter(|&k| (steps[k + 1].t - steps[k].t).abs() > 1e-12)
+            .min_by(|&a, &c| (steps[a + 1].t - steps[a].t).abs().total_cmp(&(steps[c + 1].t - steps[c].t).abs()))
+    });
+    let mut pieces: Vec<Vec<usize>> = (0..rings.len())
+        .map(|ring_idx| match wall_idx {
+            Some(k) if o.twist != 0.0 => cuts(&ring_at(ring_idx, k), &ring_at(ring_idx, k + 1)),
             _ => vec![],
         })
         .collect();
@@ -667,8 +676,8 @@ pub(crate) fn extrude_faces(path: &PathData, rule: FillRule, bounds: Rect, optio
         })
         .collect();
     let mut budget = Budget::default();
-    for ((ring, traced), pieces) in rings.iter().zip(&traced).zip(&pieces) {
-        let placed: Vec<Vec<V3>> = steps.iter().map(|s| ring_at(ring, s)).collect();
+    for ((ring_idx, (ring, traced)), pieces) in rings.iter().zip(&traced).enumerate().zip(&pieces) {
+        let placed: Vec<Vec<V3>> = (0..steps.len()).map(|s_idx| ring_at(ring_idx, s_idx)).collect();
         for (k, pair) in placed.windows(2).enumerate() {
             let ([a, c], Some(s0), Some(s1)) = (pair, steps.get(k), steps.get(k + 1)) else { continue };
             // A band between two front bevel steps borders the front, one reaching a back bevel
@@ -690,11 +699,14 @@ pub(crate) fn extrude_faces(path: &PathData, rule: FillRule, bounds: Rect, optio
     if o.cap {
         // A cap turned toward the viewer covers the walls it overlaps, even those nearer than its
         // center: twisted walls, and the walls of a fill inside the solid of its stroke.
-        let caps = [(steps.first(), along.first(), 1.0, PlanarFace::Front), (steps.last(), along.last(), -1.0, PlanarFace::Back)];
-        for (s, along, n, end) in caps {
-            let Some(s) = s else { continue };
+        let caps = [
+            (steps.first().map(|_| 0usize), along.first(), 1.0, PlanarFace::Front),
+            (steps.len().checked_sub(1), along.last(), -1.0, PlanarFace::Back),
+        ];
+        for (s_idx, along, n, end) in caps {
+            let Some(s_idx) = s_idx else { continue };
             let before = b.len();
-            b.face(rings.iter().map(|r| ring_at(r, s)).collect(), camera.rotate(V3(0.0, 0.0, n)), Order::Last)?;
+            b.face((0..rings.len()).map(|r_idx| ring_at(r_idx, s_idx)).collect(), camera.rotate(V3(0.0, 0.0, n)), Order::Last)?;
             b.end(before, end);
             if let Some(along) = along {
                 let traced: Vec<&Ring> = traced.iter().collect();

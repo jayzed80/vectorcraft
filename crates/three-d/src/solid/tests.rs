@@ -1666,3 +1666,100 @@ fn a_one_anchor_subpath_builds_nothing() {
     let b = Rect::new(-20.0, 0.0, 20.0, 30.0);
     assert_eq!(area(&plane(&p, FillRule::NonZero, b, front()).unwrap()), 0.0);
 }
+
+#[test]
+fn a_bevel_does_not_spike_or_turn_thin_parts_inside_out() {
+    let poly = |pts: &[(f64, f64)]| {
+        let mut b = BezPath::new();
+        b.move_to(pts[0]);
+        pts[1..].iter().for_each(|p| b.line_to(*p));
+        b.close_path();
+        b
+    };
+    let filled_even_odd = |outline: &[Vec<Point>], q: Point| outline.iter().filter(|r| rings::contains(r, q)).count() % 2 == 1;
+
+    // 1. 70 x 2 pt thin rectangle with a 4.3 pt inside bevel (Cove and Rounded), straight on and rotated.
+    let mut thin_rect = BezPath::new();
+    thin_rect.move_to((0.0, 0.0));
+    thin_rect.line_to((70.0, 0.0));
+    thin_rect.line_to((70.0, 2.0));
+    thin_rect.line_to((0.0, 2.0));
+    thin_rect.close_path();
+    let (p, b) = shape(&thin_rect);
+    let turned = View { rotation_x: 30.0, rotation_y: 11.0, ..front() };
+    for shape in [BevelShape::Cove, BevelShape::Rounded] {
+        let bevel = Bevel { shape, width: 4.3, height: 10.3, inside: true, ..Bevel::default() };
+        let o = Extrude { depth: 17.2, bevel: Some(bevel), ..Extrude::default() };
+        let f = extrude(&p, FillRule::EvenOdd, b, o, front()).unwrap();
+        let e = extent(&f);
+        assert!(e.x0 >= -1e-6 && e.y0 >= -1e-6 && e.x1 <= 70.0 + 1e-6 && e.y1 <= 2.0 + 1e-6, "thin rect {shape:?} exceeded bounds: {e:?}");
+        assert!(close(area(&f), 140.0, 1e-6), "thin rect {shape:?} area {}", area(&f));
+        let rot = extrude(&p, FillRule::EvenOdd, b, o, turned).unwrap();
+        assert!(rot.iter().flat_map(|f| f.contours.iter().flatten()).all(|q| q.x.is_finite() && q.y.is_finite()));
+        assert!(crate::extrude_mesh(&p, FillRule::EvenOdd, b, o, turned).is_ok());
+    }
+
+    // 2. Five-pointed star with narrow arms and glyph-like 'A' with ~1.5 pt stems and counter hole, inside bevels.
+    let mut star_pts = Vec::with_capacity(10);
+    for i in 0..10 {
+        let r = if i % 2 == 0 { 12.0 } else { 2.5 };
+        let a = std::f64::consts::TAU * (i as f64) / 10.0 - std::f64::consts::FRAC_PI_2;
+        star_pts.push((15.0 + r * a.cos(), 15.0 + r * a.sin()));
+    }
+    let mut glyph_a = poly(&[(9.0, 0.0), (11.0, 0.0), (19.0, 20.0), (17.3, 20.0), (14.5, 13.0), (5.5, 13.0), (2.7, 20.0), (1.0, 20.0)]);
+    // Triangular counter hole inside the 'A' (~1.5 pt legs and crossbar).
+    let a_hole = [(10.0, 2.5), (6.1, 11.5), (13.9, 11.5)];
+    glyph_a.extend(poly(&a_hole).elements().iter().copied());
+    let a_outer: Vec<Point> = [(9.0, 0.0), (11.0, 0.0), (19.0, 20.0), (17.3, 20.0), (14.5, 13.0), (5.5, 13.0), (2.7, 20.0), (1.0, 20.0)]
+        .iter()
+        .map(|&(x, y)| Point::new(x, y))
+        .collect();
+    let a_hole_pts: Vec<Point> = a_hole.iter().map(|&(x, y)| Point::new(x, y)).collect();
+    let star_ring: Vec<Point> = star_pts.iter().map(|&(x, y)| Point::new(x, y)).collect();
+
+    for (name, art, outline) in [("star", poly(&star_pts), vec![star_ring]), ("glyph_a", glyph_a, vec![a_outer, a_hole_pts])] {
+        let (p, b) = shape(&art);
+        for width in [1.4, 2.4, 4.3] {
+            for shape in [BevelShape::Cove, BevelShape::Rounded] {
+                let bevel = Bevel { shape, width, height: 10.3, inside: true, ..Bevel::default() };
+                let o = Extrude { depth: 17.2, bevel: Some(bevel), ..Extrude::default() };
+                let f = extrude(&p, FillRule::EvenOdd, b, o, front()).unwrap();
+                for q in f.iter().flat_map(|f| f.contours.iter().flatten()) {
+                    assert!(
+                        filled_even_odd(&outline, *q) || edge_distance(&outline, *q) <= 1e-5,
+                        "{name} inside {shape:?} width {width}: point {q:?} escaped art (dist {})",
+                        edge_distance(&outline, *q)
+                    );
+                }
+                assert!(crate::extrude_mesh(&p, FillRule::EvenOdd, b, o, front()).is_ok(), "{name} {shape:?} {width} mesh failed");
+            }
+        }
+    }
+
+    // 3. Outside bevel (4.3 and 8.0 pt) on concave V-notch, small counter hole, and 0.1 x 4 pt sliver hole.
+    let outer_notch = [(0.0, 0.0), (6.0, 0.0), (8.0, 6.0), (10.0, 0.0), (40.0, 0.0), (40.0, 16.0), (0.0, 16.0)];
+    let counter_hole = [(20.0, 4.0), (18.5, 10.0), (21.5, 10.0)];
+    let sliver_hole = [(30.0, 4.0), (30.05, 8.0), (30.1, 4.0)];
+    let mut notched_block = poly(&outer_notch);
+    notched_block.extend(poly(&counter_hole).elements().iter().copied());
+    notched_block.extend(poly(&sliver_hole).elements().iter().copied());
+    let (p, b) = shape(&notched_block);
+    let outline: Vec<Vec<Point>> = [outer_notch.as_slice(), counter_hole.as_slice(), sliver_hole.as_slice()]
+        .into_iter()
+        .map(|r| r.iter().map(|&(x, y)| Point::new(x, y)).collect())
+        .collect();
+
+    for width in [4.3, 8.0] {
+        for shape in [BevelShape::Cove, BevelShape::Rounded] {
+            let bevel = Bevel { shape, width, height: 10.3, inside: false, ..Bevel::default() };
+            let o = Extrude { depth: 17.2, bevel: Some(bevel), ..Extrude::default() };
+            let f = extrude(&p, FillRule::EvenOdd, b, o, front()).unwrap();
+            let limit = width * 2.0_f64.sqrt() + 0.1;
+            let far = f.iter().flat_map(|f| f.contours.iter().flatten()).map(|q| edge_distance(&outline, *q)).fold(0.0, f64::max);
+            assert!(far <= limit, "outside {shape:?} width {width}: spike {far} pt > limit {limit}");
+            let rot = extrude(&p, FillRule::EvenOdd, b, o, turned).unwrap();
+            assert!(rot.iter().flat_map(|f| f.contours.iter().flatten()).all(|q| q.x.is_finite() && q.y.is_finite()));
+            assert!(crate::extrude_mesh(&p, FillRule::EvenOdd, b, o, turned).is_ok());
+        }
+    }
+}

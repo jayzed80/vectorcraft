@@ -88,15 +88,21 @@ pub(super) fn brush_apply(s: &mut Session, p: &Value) -> Result<Value> {
 pub(super) fn brush_remove(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = brush_targets(&s.doc()?.doc, &roots(s, p)?);
     s.edit("Remove Brush Stroke", |d, _| {
+        let mut removed = false;
         for id in &ids {
             if let Some(n) = d.node_mut(*id) {
                 for it in &mut n.appearance.items {
                     if let AppearanceItem::Stroke(st) = it {
-                        st.brush = None;
+                        removed |= st.brush.take().is_some();
                         st.brush_options.clear();
                     }
                 }
             }
+        }
+        // As `brush.apply` makes its brush current, removing a brush makes none current, so the
+        // Paintbrush draws plain strokes again, which take width profiles (#8552).
+        if removed {
+            d.unknown.remove(brush::CURRENT_KEY);
         }
         Ok(())
     })?;

@@ -1423,6 +1423,44 @@ fn paintbrush_tool_uses_the_current_brush() {
     assert!(s.execute("brush.setCurrent", &json!({"name": "Nope"})).is_err());
 }
 
+/// Remove Brush Stroke undoes what applying a brush did to the Paintbrush too (#8552): the brush is
+/// no longer current, so the next Paintbrush stroke is plain and the Width tool edits it. Undo puts
+/// the brush back on the path and makes it current again.
+#[test]
+fn remove_brush_stroke_lets_the_paintbrush_draw_plain_strokes_again() {
+    let mut s = session();
+    let v = ViewInfo::default();
+    let stroke = |s: &mut Session, y: f64| {
+        s.select_tool("paintbrush", v).unwrap();
+        for (k, x) in [(PointerKind::Down, 10.0), (PointerKind::Drag, 50.0), (PointerKind::Drag, 90.0), (PointerKind::Up, 130.0)] {
+            s.pointer(&PointerEvent::new(k, x, y), v).unwrap();
+        }
+        s.doc().unwrap().selection.objects[0]
+    };
+    let first = stroke(&mut s, 10.0);
+    assert_eq!(brush_of(&s, first), None, "no brush is current in a new document");
+    s.execute("brush.apply", &json!({"name": "Charcoal"})).unwrap();
+    assert_eq!(s.doc().unwrap().doc.unknown.get("currentBrush"), Some(&json!("Charcoal")));
+    s.execute("brush.remove", &json!({})).unwrap();
+    assert_eq!(brush_of(&s, first), None);
+    assert_eq!(s.doc().unwrap().doc.unknown.get("currentBrush"), None, "the removed brush is no longer current");
+    let second = stroke(&mut s, 200.0);
+    assert_eq!(brush_of(&s, second), None, "the Paintbrush draws a plain stroke again");
+    // The Width tool adds a width point to the new stroke.
+    s.select_tool("width", v).unwrap();
+    for (k, y) in [(PointerKind::Down, 200.0), (PointerKind::Drag, 205.0), (PointerKind::Drag, 210.0), (PointerKind::Up, 210.0)] {
+        s.pointer(&PointerEvent::new(k, 70.0, y), v).unwrap();
+    }
+    let profiled = s.doc().unwrap().doc.node(second).unwrap().appearance.stroke().unwrap().profile.is_some();
+    assert!(profiled, "the Width tool edits the new stroke");
+    // Undo back past Remove Brush Stroke: the brush is on the path and current again.
+    for _ in 0..3 {
+        s.execute("edit.undo", &json!({})).unwrap();
+    }
+    assert_eq!(brush_of(&s, first).as_deref(), Some("Charcoal"));
+    assert_eq!(s.doc().unwrap().doc.unknown.get("currentBrush"), Some(&json!("Charcoal")));
+}
+
 /// The current brush and symbol are not undo steps, so undo and redo of other steps leave them as
 /// they are. With nothing else changed outside the history, undo back to the saved document leaves
 /// it saved.
